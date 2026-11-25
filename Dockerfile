@@ -17,3 +17,5 @@ COPY apps/web/docker-entrypoint.sh /docker-entrypoint.d/40-runtime-config.sh
 RUN chmod +x /docker-entrypoint.d/40-runtime-config.sh
 
 EXPOSE 3000
+
+COPY render-upstream-commit.txt /usr/share/nginx/html/upstream-commit.txt
