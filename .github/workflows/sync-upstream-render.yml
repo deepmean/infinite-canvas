@@ -65,7 +65,10 @@ jobs:
           cid=$(docker run -d -p 127.0.0.1::3000 canvas-release-check)
           trap 'docker rm -f "$cid" >/dev/null' EXIT
           addr=$(docker port "$cid" 3000/tcp)
-          curl -fsS --retry 8 --retry-connrefused --max-time 10 "http://$addr/" > "$RUNNER_TEMP/canvas-index"
+          if ! curl -fsS --retry 8 --retry-all-errors --max-time 10 "http://$addr/" > "$RUNNER_TEMP/canvas-index"; then
+            docker logs "$cid" >&2
+            exit 1
+          fi
           curl -fsS --max-time 10 "http://$addr/canvas" | cmp - "$RUNNER_TEMP/canvas-index"
           docker exec "$cid" sh -c 'grep -qF canvas.imageRequestMinutes /usr/share/nginx/html/assets/*.js && grep -qF canvas.videoPollMinutes /usr/share/nginx/html/assets/*.js'
 
