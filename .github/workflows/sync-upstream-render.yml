@@ -46,6 +46,7 @@ jobs:
           fi
           python3 .github/scripts/apply-media-timeouts.py "$candidate"
           python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          mkdir -p "$candidate/apps/web/public"
           printf '%s\n' "$(git -C "$candidate" rev-parse HEAD)" > "$candidate/apps/web/public/upstream-commit.txt"
           git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
           git -C "$candidate" add -A
@@ -102,6 +103,7 @@ jobs:
           git -C "$candidate" checkout -q --detach FETCH_HEAD
           python3 .github/scripts/apply-media-timeouts.py "$candidate"
           python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          mkdir -p "$candidate/apps/web/public"
           printf '%s\n' "$(git -C "$candidate" rev-parse HEAD)" > "$candidate/apps/web/public/upstream-commit.txt"
           git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
           git -C "$candidate" add -A
