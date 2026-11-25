@@ -1,0 +1,16 @@
+.next/
+out/
+node_modules/
+.pnpm-store/
+.env*
+!.env.example
+data/
+*.log
+*.tsbuildinfo
+.DS_Store
+.idea
+apps/web/dist
+
+**/dist
+packages/workbench/public/plugins
+apps/cli/agent-instructions.md

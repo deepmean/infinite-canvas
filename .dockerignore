@@ -1,0 +1,17 @@
+.git
+**/node_modules
+**/dist
+**/.pnpm-store
+.idea
+docs2
+data
+apps/docs/.next
+apps/docs/.source
+apps/docs/node_modules
+apps/docs/out
+apps/web/.next
+apps/web/node_modules
+apps/web/out
+*.log
+.env*
+!.env.example
