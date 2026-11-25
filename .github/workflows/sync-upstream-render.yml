@@ -1,0 +1,145 @@
+name: Sync upstream and deploy to Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      redeploy:
+        description: Trigger Render again if the release tree is unchanged
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canvas-render-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'deepmean/infinite-canvas' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      upstream: ${{ steps.prepare.outputs.upstream }}
+      tree: ${{ steps.prepare.outputs.tree }}
+      previous: ${{ steps.prepare.outputs.previous }}
+      changed: ${{ steps.prepare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: prepare
+        env:
+          RELEASE: https://github.com/deepmean/infinite-canvas.git
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/canvas-build"
+          git clone --quiet --depth 1 --no-tags --branch main https://github.com/basketikun/infinite-canvas.git "$candidate"
+          upstream=$(git -C "$candidate" rev-parse HEAD)
+          if python3 .github/scripts/apply-media-timeouts.py "$candidate" --check; then
+            echo 'Expected the upstream checkout to fail the fork timeout check' >&2
+            exit 1
+          fi
+          python3 .github/scripts/apply-media-timeouts.py "$candidate"
+          python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
+          git -C "$candidate" add -A
+          tree=$(git -C "$candidate" write-tree)
+          previous=$(git ls-remote --heads "$RELEASE" refs/heads/render-release | cut -f1)
+          changed=true
+          if [[ -n "$previous" ]]; then
+            git -C "$candidate" fetch -q --depth 1 --no-tags "$RELEASE" "$previous"
+            if [[ "$(git -C "$candidate" rev-parse "$previous^{tree}")" == "$tree" ]]; then changed=false; fi
+          fi
+          printf 'upstream=%s\ntree=%s\nprevious=%s\nchanged=%s\n' "$upstream" "$tree" "$previous" "$changed" >> "$GITHUB_OUTPUT"
+      - name: Build and smoke-test the Render image
+        if: steps.prepare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag canvas-release-check "$RUNNER_TEMP/canvas-build"
+          cid=$(docker run -d -p 127.0.0.1::3000 canvas-release-check)
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          addr=$(docker port "$cid" 3000/tcp)
+          curl -fsS --retry 8 --retry-connrefused --max-time 10 "http://$addr/" > "$RUNNER_TEMP/canvas-index"
+          curl -fsS --max-time 10 "http://$addr/canvas" | cmp - "$RUNNER_TEMP/canvas-index"
+          docker exec "$cid" sh -c 'grep -qF canvas.imageRequestMinutes /usr/share/nginx/html/assets/*.js && grep -qF canvas.videoPollMinutes /usr/share/nginx/html/assets/*.js'
+
+  publish:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: release
+        env:
+          UPSTREAM: ${{ needs.build.outputs.upstream }}
+          EXPECTED_TREE: ${{ needs.build.outputs.tree }}
+          PREVIOUS: ${{ needs.build.outputs.previous }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/canvas-release"
+          git init -q "$candidate"
+          git -C "$candidate" fetch -q --depth 1 --no-tags https://github.com/basketikun/infinite-canvas.git "$UPSTREAM"
+          git -C "$candidate" checkout -q --detach FETCH_HEAD
+          python3 .github/scripts/apply-media-timeouts.py "$candidate"
+          python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
+          git -C "$candidate" add -A
+          tree=$(git -C "$candidate" write-tree)
+          [[ "$tree" == "$EXPECTED_TREE" ]] || { echo 'Release tree differs from tested tree' >&2; exit 1; }
+          release="https://github.com/$GITHUB_REPOSITORY.git"
+          actual=$(git ls-remote --heads "$release" refs/heads/render-release | cut -f1)
+          [[ "$actual" == "$PREVIOUS" ]] || { echo 'Release branch changed during build' >&2; exit 1; }
+          parents=()
+          if [[ -n "$actual" ]]; then
+            git -C "$candidate" fetch -q --depth 1 --no-tags "$release" "$actual"
+            parents=(-p "$actual")
+          fi
+          export GIT_AUTHOR_NAME='github-actions[bot]' GIT_COMMITTER_NAME='github-actions[bot]'
+          export GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          commit=$(git -C "$candidate" commit-tree "$tree" "${parents[@]}" -m "Release upstream ${UPSTREAM:0:7} with media timeouts" -m "Upstream-Commit: $UPSTREAM")
+          gh auth setup-git
+          git -C "$candidate" push "$release" "$commit:refs/heads/render-release"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: [build, publish]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.publish.result == 'success' ||
+       (needs.publish.result == 'skipped' && inputs.redeploy))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Trigger Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+          COMMIT: ${{ needs.publish.outputs.commit || needs.build.outputs.previous }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$RENDER_DEPLOY_HOOK" ]]; then
+            echo '::warning::No RENDER_DEPLOY_HOOK configured; the tested release is available but Render was not triggered.'
+            exit 0
+          fi
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RENDER_DEPLOY_HOOK" == https://api.render.com/deploy/* ]]
+          curl --silent --fail --output /dev/null --max-time 30 \
+            --get --data-urlencode "ref=$COMMIT" "$RENDER_DEPLOY_HOOK"
+          printf 'Render accepted the deploy request for `%s`. Check the Render dashboard for rollout status.\n' "$COMMIT" >> "$GITHUB_STEP_SUMMARY"
