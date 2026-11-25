@@ -46,6 +46,7 @@ jobs:
           fi
           python3 .github/scripts/apply-media-timeouts.py "$candidate"
           python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          printf '%s\n' "$(git -C "$candidate" rev-parse HEAD)" > "$candidate/apps/web/public/upstream-commit.txt"
           git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
           git -C "$candidate" add -A
           tree=$(git -C "$candidate" write-tree)
@@ -70,6 +71,7 @@ jobs:
             exit 1
           fi
           curl -fsS --max-time 10 "http://$addr/canvas" | cmp - "$RUNNER_TEMP/canvas-index"
+          curl -fsS --max-time 10 "http://$addr/upstream-commit.txt" | cmp - "$RUNNER_TEMP/canvas-build/apps/web/public/upstream-commit.txt"
           docker exec "$cid" sh -c 'grep -qF canvas.imageRequestMinutes /usr/share/nginx/html/assets/*.js && grep -qF canvas.videoPollMinutes /usr/share/nginx/html/assets/*.js'
 
   publish:
@@ -100,6 +102,7 @@ jobs:
           git -C "$candidate" checkout -q --detach FETCH_HEAD
           python3 .github/scripts/apply-media-timeouts.py "$candidate"
           python3 .github/scripts/apply-media-timeouts.py "$candidate" --check
+          printf '%s\n' "$(git -C "$candidate" rev-parse HEAD)" > "$candidate/apps/web/public/upstream-commit.txt"
           git -C "$candidate" rm -qr --ignore-unmatch -- .github/workflows
           git -C "$candidate" add -A
           tree=$(git -C "$candidate" write-tree)
